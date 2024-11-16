@@ -4,7 +4,8 @@ import pathlib
 import numpy as np
 import pydicom
 import tifffile
-import vedo
+
+from FixedResampleVolume import FixedResampleVolume
 
 
 def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, float]:
@@ -20,7 +21,8 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
 
     dcm_files = list(phantom_dir_path.glob('*.dcm'))
     volume = np.empty((len(dcm_files), size, size), dtype=np.float32)
-    z_scale_last = None
+    pixel_spacing_last = None
+    slice_thickness_last = None
     for i, path in enumerate(dcm_files):
         dcm = pydicom.dcmread(path)
         rows = int(dcm[rows_key].value)
@@ -32,31 +34,30 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
         assert pixel_spacing[0] == pixel_spacing[1]
 
         pixel_spacing = float(pixel_spacing[0])
-        pixel_padding = int(dcm[pixel_padding_key].value)
         rescale_intercept = float(dcm[rescale_intercept_key].value)
         rescale_slope = float(dcm[rescale_slope_key].value)
-
         img = dcm.pixel_array
         img = np.astype(img, np.float32)
-        img[img==pixel_padding] = rescale_intercept
+        if pixel_padding_key in dcm:
+            pixel_padding = int(dcm[pixel_padding_key].value)
+            img[img==pixel_padding] = rescale_intercept
         img *= rescale_slope
         img += rescale_intercept
 
-        z_scale = slice_thickness / pixel_spacing
-        assert z_scale_last is None or np.isclose(z_scale, z_scale_last)
+        assert pixel_spacing_last is None or np.isclose(pixel_spacing, pixel_spacing_last)
+        assert slice_thickness_last is None or np.isclose(slice_thickness, slice_thickness_last)
 
-        z_scale_last = z_scale
+        pixel_spacing_last = pixel_spacing
+        slice_thickness_last = slice_thickness
         volume[i] = img
 
-    return volume, pixel_spacing, z_scale_last
+    return volume, pixel_spacing_last, slice_thickness_last
 
 
-def scale_volume(volume: np.ndarray, voxel_size: float, z_scale: float, new_side: int) -> tuple[np.ndarray, float]:
-    vedo_volume = vedo.Volume(volume, spacing=(voxel_size * z_scale, voxel_size, voxel_size))
-    shape = volume.shape
-    new_height = int(shape[0] * new_side / shape[1] * z_scale + 0.5)
-    vedo_volume.resize([new_height, new_side, new_side])
-    return np.ascontiguousarray(vedo_volume.tonumpy()), voxel_size * shape[1] / new_side
+def scale_volume(volume: np.ndarray, voxel_size: float, slice_thickness: float) -> np.ndarray:
+    vedo_volume = FixedResampleVolume(volume, spacing=(slice_thickness, voxel_size, voxel_size))
+    vedo_volume.resample(new_spacing=[voxel_size, voxel_size, voxel_size], interpolation=1)
+    return np.ascontiguousarray(vedo_volume.tonumpy())
 
 
 def create_config(volume: np.ndarray, voxel_size: float, volume_raw_names: list[str]) -> dict:
@@ -107,15 +108,13 @@ def make_phantom(
 def main() -> None:
     root_dir = pathlib.Path(__file__).parent.resolve()
     img_dir = root_dir / "img"
-    volume, voxel_size, z_scale = read_phantom(img_dir)
-    print(f"Before resize max HU = {volume.max():.2f}")
-    volume, voxel_size = scale_volume(volume, voxel_size, z_scale, 512)
-    print(f"After resize max HU = {volume.max():.2f}")
+    volume, voxel_size, slice_thickness = read_phantom(img_dir)
+    print(f"Before resize max HU = {volume.max():.2f}; min HU = {volume.min():.2f}")
+    volume = scale_volume(volume, voxel_size, slice_thickness)
+    print(f"After resize max HU = {volume.max():.2f}; min HU = {volume.min():.2f}")
 
-    d = 471  # flat
+    d = 471
     h = 160
-    # d = 502  # curved
-    # h = 100
 
     volume_d = voxel_size * volume.shape[1]
     scale = d / volume_d
