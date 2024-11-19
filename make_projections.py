@@ -38,7 +38,7 @@ def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg"
     flat_detector = True
-    phantom_path = root_path / "phantom_water"
+    phantom_path = root_path.parent / "phantoms/phantom_0011_501"
     phantom_json_path = phantom_path / "phantom.json"
     projs_path = phantom_path / ("flat" if flat_detector else "curved")
     xcist = do_projs(

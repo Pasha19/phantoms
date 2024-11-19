@@ -41,8 +41,9 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
         if pixel_padding_key in dcm:
             pixel_padding = int(dcm[pixel_padding_key].value)
             img[img==pixel_padding] = rescale_intercept
+        img[img < 0] = 0
         img *= rescale_slope
-        img += rescale_intercept
+        img /= -rescale_intercept
 
         assert pixel_spacing_last is None or np.isclose(pixel_spacing, pixel_spacing_last)
         assert slice_thickness_last is None or np.isclose(slice_thickness, slice_thickness_last)
@@ -54,29 +55,29 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
     return volume, pixel_spacing_last, slice_thickness_last
 
 
-def scale_volume(volume: np.ndarray, voxel_size: float, slice_thickness: float) -> np.ndarray:
+def scale_volume(volume: np.ndarray, voxel_size: float, slice_thickness: float, new_size: int) -> np.ndarray:
     vedo_volume = FixedResampleVolume(volume, spacing=(slice_thickness, voxel_size, voxel_size))
-    vedo_volume.resample(new_spacing=[voxel_size, voxel_size, voxel_size], interpolation=1)
+    new_voxel_size = voxel_size * volume.shape[1] / new_size
+    vedo_volume.resample(new_spacing=[new_voxel_size, new_voxel_size, new_voxel_size], interpolation=1)
     return np.ascontiguousarray(vedo_volume.tonumpy())
 
 
-def create_config(volume: np.ndarray, voxel_size: float, volume_raw_names: list[str]) -> dict:
+def create_config(volume: np.ndarray, voxel_size: float, volume_raw_name: str) -> dict:
     size = volume.shape
-    num = 2
     cfg = {
-        "n_materials": num,
-        "mat_name": ["bone", "water"],
-        "volumefractionmap_filename": volume_raw_names[0:num],
-        "volumefractionmap_datatype": ["float"] * num,
-        "rows": [size[1]] * num,
-        "cols": [size[2]] * num,
-        "slices": [size[0]] * num,
-        "x_size": [voxel_size] * num,
-        "y_size": [voxel_size] * num,
-        "z_size": [voxel_size] * num,
-        "x_offset": [size[1]/2] * num,
-        "y_offset": [size[2]/2] * num,
-        "z_offset": [size[0]/2] * num,
+        "n_materials": 1,
+        "mat_name": ["water"],
+        "volumefractionmap_filename": [volume_raw_name],
+        "volumefractionmap_datatype": ["float"],
+        "rows": [size[1]],
+        "cols": [size[2]],
+        "slices": [size[0]],
+        "x_size": [voxel_size],
+        "y_size": [voxel_size],
+        "z_size": [voxel_size],
+        "x_offset": [size[1]/2],
+        "y_offset": [size[2]/2],
+        "z_offset": [size[0]/2],
     }
     return cfg
 
@@ -85,21 +86,12 @@ def make_phantom(
         phantom_path: pathlib.Path,
         volume: np.ndarray,
         voxel_size: float,
-        bone_threshold: float,
-        water_threshold: float,
-        air_threshold: float,
 ) -> None:
     phantom_path.mkdir(exist_ok=True, parents=True)
-    volume_raw_names = ["phantom_bone.raw", "phantom_water.raw"]
-    volumes = [
-        np.clip((volume - water_threshold) / (bone_threshold - water_threshold), 0, 1),
-        np.clip((volume - bone_threshold) / (water_threshold - bone_threshold), 0, 1),
-    ]
-    volumes[1] = np.where(volume < air_threshold, np.float32(0), volumes[1])
-    for vol, volume_name in zip(volumes, volume_raw_names):
-        with open(phantom_path / volume_name, "wb") as f:
-            f.write(vol)
-    cfg = create_config(volume, voxel_size, volume_raw_names)
+    volume_raw_name = "phantom_water.raw"
+    with open(phantom_path / volume_raw_name, "wb") as f:
+        f.write(volume)
+    cfg = create_config(volume, voxel_size, volume_raw_name)
     with open(phantom_path / "phantom.json", "w", newline="\n") as f:
         json.dump(cfg, f, indent=4)
     tifffile.imwrite(phantom_path / "volume.tif", volume, imagej=True, compression="zlib")
@@ -107,14 +99,14 @@ def make_phantom(
 
 def main() -> None:
     root_dir = pathlib.Path(__file__).parent.resolve()
-    img_dir = root_dir / "img"
+    img_dir = root_dir.parent / r"LIDC_IDRI\LIDC-IDRI-0011\01-01-2000-NA-NA-73568\3000559.000000-NA-23138"
     volume, voxel_size, slice_thickness = read_phantom(img_dir)
-    print(f"Before resize max HU = {volume.max():.2f}; min HU = {volume.min():.2f}")
-    volume = scale_volume(volume, voxel_size, slice_thickness)
-    print(f"After resize max HU = {volume.max():.2f}; min HU = {volume.min():.2f}")
+    print(f"Before resize max = {volume.max():.2f}; min = {volume.min():.2f}")
+    volume = scale_volume(volume, voxel_size, slice_thickness, 453)
+    print(f"After resize max = {volume.max():.2f}; min = {volume.min():.2f}")
 
-    d = 471
-    h = 160
+    d = 501.7847226
+    h = 159.5077264
 
     volume_d = voxel_size * volume.shape[1]
     scale = d / volume_d
@@ -127,7 +119,7 @@ def main() -> None:
         start_slice = (volume.shape[0] - keep_slices_num) // 2
         volume = volume[start_slice : start_slice + keep_slices_num]
 
-    make_phantom(root_dir / "phantom0", volume, scaled_voxel_size, 1500, 100, -900)
+    make_phantom(root_dir.parent / "phantoms/phantom_0011_501", volume, scaled_voxel_size)
 
 
 if __name__ == "__main__":
