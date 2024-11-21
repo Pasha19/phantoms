@@ -11,15 +11,15 @@ from ts_algorithms import fdk
 
 def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
-    phantom_path = root_path.parent / "phantoms/phantom_0011_501"
+    phantom_path = root_path.parent / "phantoms/phantom_0011/downscaled"
 
     voxel_size = 1.107692544
     image_shape = [144, 453, 453]
     image_size = list(map(lambda x: x*voxel_size, image_shape))
 
-    projs = tifffile.imread(str(phantom_path / "projs_flat.tif"))
+    projs = tifffile.imread(str(phantom_path / "projs.tif"))
     num = projs.shape[0]
-    projs_cfg_path = phantom_path / "flat" / "projs.json"
+    projs_cfg_path = phantom_path / "projs.json"
     with open(projs_cfg_path, "r") as f:
         data = json.load(f)
         pixel_size = data["detector"]["row_size"], data["detector"]["col_size"]
@@ -38,7 +38,7 @@ def main() -> None:
 
     recon = fdk(A, sino)
     recon = recon.detach().cpu().numpy()
-    tifffile.imwrite(phantom_path / "recon_flat.tif", recon, imagej=True, compression="zlib")
+    tifffile.imwrite(phantom_path / "recon.tif", recon, imagej=True, compression="zlib")
     volume = (recon - recon.min()) / (recon.max() - recon.min())
     im = Image.fromarray(255 * volume[:, volume.shape[1] // 2, :]).convert("L")
     im.save(phantom_path / "slice.png")

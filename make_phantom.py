@@ -3,12 +3,13 @@ import pathlib
 
 import numpy as np
 import pydicom
+from skimage import measure, morphology
 import tifffile
 
 from FixedResampleVolume import FixedResampleVolume
 
 
-def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, float]:
+def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, float, float]:
     slice_thickness_key = 0x18, 0x50
     rows_key = 0x28, 0x10
     cols_key = 0x28, 0x11
@@ -23,6 +24,7 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
     volume = np.empty((len(dcm_files), size, size), dtype=np.float32)
     pixel_spacing_last = None
     slice_thickness_last = None
+    rescale_intercept = 0.0
     for i, path in enumerate(dcm_files):
         dcm = pydicom.dcmread(path)
         rows = int(dcm[rows_key].value)
@@ -41,9 +43,8 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
         if pixel_padding_key in dcm:
             pixel_padding = int(dcm[pixel_padding_key].value)
             img[img==pixel_padding] = rescale_intercept
-        img[img < 0] = 0
         img *= rescale_slope
-        img /= -rescale_intercept
+        img += rescale_intercept
 
         assert pixel_spacing_last is None or np.isclose(pixel_spacing, pixel_spacing_last)
         assert slice_thickness_last is None or np.isclose(slice_thickness, slice_thickness_last)
@@ -52,46 +53,52 @@ def read_phantom(phantom_dir_path: pathlib.Path) -> tuple[np.ndarray, float, flo
         slice_thickness_last = slice_thickness
         volume[i] = img
 
-    return volume, pixel_spacing_last, slice_thickness_last
+    return volume, pixel_spacing_last, slice_thickness_last, rescale_intercept
 
 
-def scale_volume(
+def make_air_mask(volume: np.ndarray, threshold: float) -> np.ndarray:
+    # labels = measure.label(morphology.binary_opening(volume < threshold))
+    labels = measure.label(volume < threshold)
+    label, count = np.unique(labels, return_counts=True)
+    label_num = np.argmax(count[1:]) + 1
+    mask = np.where(labels == label[label_num], np.uint8(255), np.uint8(0))
+
+    return mask
+
+
+def resampled_volume(
         volume: np.ndarray,
         voxel_size: float,
         slice_thickness: float,
         new_size: int,
-        voxel_equal_sized: bool,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     vedo_volume = FixedResampleVolume(volume, spacing=(slice_thickness, voxel_size, voxel_size))
-    new_voxel_size = voxel_size * volume.shape[1] / new_size
-    if voxel_equal_sized:
-        vedo_volume.resample(new_spacing=[new_voxel_size, new_voxel_size, new_voxel_size], interpolation=1)
-    else:
-        new_voxel_slice_size = slice_thickness * volume.shape[1] / new_size
-        vedo_volume.resample(new_spacing=[new_voxel_slice_size, new_voxel_size, new_voxel_size])
-    return np.ascontiguousarray(vedo_volume.tonumpy())
+    new_spacing = float(vedo_volume.ybounds()[1] / (new_size - 1))
+    vedo_volume.resample(new_spacing=[new_spacing, new_spacing, new_spacing], interpolation=1)
+    return np.ascontiguousarray(vedo_volume.tonumpy()), voxel_size * volume.shape[1] / new_size
 
 
 def create_config(
-        volume: np.ndarray,
+        dims: np.ndarray,
         voxel_size: tuple[float, float, float],
-        volume_raw_name: str,
+        volume_raw_names: list[str],
+        materials: list[str],
 ) -> dict:
-    size = volume.shape
+    num = len(volume_raw_names)
     cfg = {
-        "n_materials": 1,
-        "mat_name": ["water"],
-        "volumefractionmap_filename": [volume_raw_name],
-        "volumefractionmap_datatype": ["float"],
-        "rows": [size[1]],
-        "cols": [size[2]],
-        "slices": [size[0]],
-        "x_size": [voxel_size[1]],
-        "y_size": [voxel_size[2]],
-        "z_size": [voxel_size[0]],
-        "x_offset": [size[1]/2],
-        "y_offset": [size[2]/2],
-        "z_offset": [size[0]/2],
+        "n_materials": num,
+        "mat_name": materials,
+        "volumefractionmap_filename": volume_raw_names,
+        "volumefractionmap_datatype": ["float"] * num,
+        "rows": [dims[1]] * num,
+        "cols": [dims[2]] * num,
+        "slices": [dims[0]] * num,
+        "x_size": [voxel_size[1]] * num,
+        "y_size": [voxel_size[2]] * num,
+        "z_size": [voxel_size[0]] * num,
+        "x_offset": [dims[1]/2] * num,
+        "y_offset": [dims[2]/2] * num,
+        "z_offset": [dims[0]/2] * num,
     }
     return cfg
 
@@ -100,41 +107,90 @@ def make_phantom(
         phantom_path: pathlib.Path,
         volume: np.ndarray,
         voxel_size: float,
-        slice_thickness: float,
+        scale: float,
 ) -> None:
     phantom_path.mkdir(exist_ok=True, parents=True)
-    volume_raw_name = "phantom_water.raw"
-    with open(phantom_path / volume_raw_name, "wb") as f:
+    with open(phantom_path / "phantom_water.raw", "wb") as f:
         f.write(volume)
-    cfg = create_config(volume, (slice_thickness, voxel_size, voxel_size), volume_raw_name)
+    scaled_voxel_size = voxel_size * scale
+    cfg = create_config(
+        volume.shape,
+        (scaled_voxel_size, scaled_voxel_size, scaled_voxel_size),
+        ["phantom_water.raw"],
+        ["water"],
+    )
     with open(phantom_path / "phantom.json", "w", newline="\n") as f:
         json.dump(cfg, f, indent=4)
-    tifffile.imwrite(phantom_path / "volume.tif", volume, imagej=True, compression="zlib")
+
+
+def cut_from_middle(volume: np.ndarray, height: float, voxel_size: float, scale: float):
+    scaled_voxel_size = scale * voxel_size
+    scaled_volume_height = scaled_voxel_size * volume.shape[0]
+    print(f"scaled_volume_height: {scaled_volume_height:.2f}")
+    print(f"volumes: {scaled_volume_height / height:.2f}")
+    keep_slices_num = int(height / scaled_volume_height * volume.shape[0])
+
+    if volume.shape[0] - keep_slices_num > 0:
+        start_slice = (volume.shape[0] - keep_slices_num) // 2
+        return volume[start_slice: start_slice + keep_slices_num]
+    return volume
 
 
 def main() -> None:
-    root_dir = pathlib.Path(__file__).parent.resolve()
-    img_dir = root_dir.parent / r"LIDC_IDRI\LIDC-IDRI-0011\01-01-2000-NA-NA-73568\3000559.000000-NA-23138"
-    volume, voxel_size, slice_thickness = read_phantom(img_dir)
-    print(f"Before resize max = {volume.max():.2f}; min = {volume.min():.2f}")
-    volume = scale_volume(volume, voxel_size, slice_thickness, new_size=453, voxel_equal_sized=True)
-    print(f"After resize max = {volume.max():.2f}; min = {volume.min():.2f}")
+    air_hu = -975.0
+    bone_hu = 1500.0
+
+    upscaled_size = 1000
+    downscaled_size = 453
 
     d = 501.7847226
     h = 159.5077264
 
+    root_path = pathlib.Path(__file__).parent.resolve()
+    img_path = root_path.parent / r"LIDC_IDRI\LIDC-IDRI-0011\01-01-2000-NA-NA-73568\3000559.000000-NA-23138"
+    phantom_path = root_path.parent / "phantoms/phantom_0011"
+    phantom_path.mkdir(exist_ok=True, parents=True)
+
+    volume, voxel_size, slice_thickness, rescale_intercept = read_phantom(img_path)
+    tifffile.imwrite(phantom_path / "volume.tif", volume, imagej=True, compression="zlib")
     volume_d = voxel_size * volume.shape[1]
+    print(f"diameter: {volume_d}")
+    print(f"slices: {volume.shape[0]}")
+    print(f"slice_thickness: {slice_thickness}")
+    print(f"height: {volume.shape[0] * slice_thickness}")
+    print(f"rescale_intercept: {rescale_intercept}")
+
+    volume[volume > bone_hu] = bone_hu
+    air_mask = make_air_mask(volume, air_hu)
+    tifffile.imwrite(phantom_path / "air_mask.tif", air_mask, compression="zlib")
+    volume[air_mask > 0] = air_hu
+    tifffile.imwrite(phantom_path / "volume_clipped.tif", volume, imagej=True, compression="zlib")
+
+    volume -= rescale_intercept
+    volume /= -rescale_intercept
+    volume[air_mask > 0] = 0.0
+    tifffile.imwrite(phantom_path / "volume_to_water.tif", volume, imagej=True, compression="zlib")
+
+    volume, voxel_size = resampled_volume(volume, voxel_size, slice_thickness, new_size=upscaled_size)
+    print(f"voxel_size_upscaled: {voxel_size}")
+    # volume_upscaled += np.random.uniform(-1, 1, volume_upscaled.shape)
+    # tifffile.imwrite(phantom_path / "volume_upscaled.tif", volume, imagej=True, compression="zlib")
+
     scale = d / volume_d
+    print(f"scale: {scale:.2f}")
 
-    scaled_voxel_size = scale * voxel_size
-    scaled_volume_h = scaled_voxel_size * volume.shape[0]
-    keep_slices_num = int(h / scaled_volume_h * volume.shape[0])
+    print("upscaled")
+    volume_cut = cut_from_middle(volume, h, voxel_size, scale)
+    make_phantom(phantom_path / "upscaled", volume_cut, voxel_size, scale)
+    tifffile.imwrite(phantom_path / "volume_upscaled_cut.tif", volume_cut, imagej=True, compression="zlib")
 
-    if volume.shape[0] - keep_slices_num > 0:
-        start_slice = (volume.shape[0] - keep_slices_num) // 2
-        volume = volume[start_slice : start_slice + keep_slices_num]
+    volume, voxel_size = resampled_volume(volume, voxel_size, voxel_size, new_size=downscaled_size)
+    tifffile.imwrite(phantom_path / "volume_downscaled.tif", volume, imagej=True, compression="zlib")
 
-    make_phantom(root_dir.parent / "phantoms/phantom_0011_501", volume, scaled_voxel_size, scaled_voxel_size)
+    print("downscaled")
+    volume_cut = cut_from_middle(volume, h, voxel_size, scale)
+    make_phantom(phantom_path / "downscaled", volume_cut, voxel_size, scale)
+    tifffile.imwrite(phantom_path / "volume_downscaled_cut.tif", volume_cut, imagej=True, compression="zlib")
 
 
 if __name__ == "__main__":

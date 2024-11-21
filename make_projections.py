@@ -14,12 +14,12 @@ def do_projs(phantom_json_path: pathlib.Path, cfg: list[str], projs_path: pathli
     return xcist
 
 
-def get_config(cfg_path: pathlib.Path, flat_detector: bool) -> list[str]:
+def get_config(cfg_path: pathlib.Path) -> list[str]:
     return [
         str(cfg_path / "phantom.cfg"),
-        str(cfg_path / "physics_flat.cfg") if flat_detector else str(cfg_path / "physics.cfg"),
+        str(cfg_path / "physics_flat.cfg"),
         str(cfg_path / "protocol.cfg"),
-        str(cfg_path / "scanner_flat.cfg") if flat_detector else str(cfg_path / "scanner.cfg"),
+        str(cfg_path / "scanner_flat.cfg"),
     ]
 
 
@@ -37,22 +37,20 @@ def make_proj_config(xcist: xc.CatSim) -> dict:
 def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg"
-    flat_detector = True
-    phantom_path = root_path.parent / "phantoms/phantom_0011_501"
+    phantom_path = root_path.parent / "phantoms/phantom_0011/upscaled"
     phantom_json_path = phantom_path / "phantom.json"
-    projs_path = phantom_path / ("flat" if flat_detector else "curved")
     xcist = do_projs(
         phantom_json_path,
-        get_config(cfg_path, flat_detector),
-        phantom_path / ("flat" if flat_detector else "curved"),
+        get_config(cfg_path),
+        phantom_path,
     )
 
     num = xcist.cfg.protocol.viewCount
     rows = xcist.cfg.scanner.detectorRowCount
     cols = xcist.cfg.scanner.detectorColCount
-    projs = xc.rawread(str(projs_path / "projs.prep"), (num, rows, cols), "float")
-    tifffile.imwrite(phantom_path / f"projs_{"flat" if flat_detector else "curved"}.tif", projs, imagej=True, compression="zlib")
-    with open(projs_path / "projs.json", "w", newline="\n") as f:
+    projs = xc.rawread(str(phantom_path / "projs.prep"), (num, rows, cols), "float")
+    tifffile.imwrite(phantom_path / f"projs.tif", projs, imagej=True, compression="zlib")
+    with open(phantom_path / "projs.json", "w", newline="\n") as f:
         json.dump(make_proj_config(xcist), f, indent=4)
 
 
