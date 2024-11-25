@@ -126,8 +126,6 @@ def make_phantom(
 def cut_from_middle(volume: np.ndarray, height: float, voxel_size: float, scale: float):
     scaled_voxel_size = scale * voxel_size
     scaled_volume_height = scaled_voxel_size * volume.shape[0]
-    print(f"scaled_volume_height: {scaled_volume_height:.2f}")
-    print(f"volumes: {scaled_volume_height / height:.2f}")
     keep_slices_num = int(height / scaled_volume_height * volume.shape[0])
 
     if volume.shape[0] - keep_slices_num > 0:
@@ -140,8 +138,8 @@ def main() -> None:
     air_hu = -975.0
     bone_hu = 1500.0
 
-    upscaled_size = 1000
     downscaled_size = 453
+    upscaled_size = 2 * downscaled_size
 
     d = 501.7847226
     h = 159.5077264
@@ -154,11 +152,6 @@ def main() -> None:
     volume, voxel_size, slice_thickness, rescale_intercept = read_phantom(img_path)
     tifffile.imwrite(phantom_path / "volume.tif", volume, imagej=True, compression="zlib")
     volume_d = voxel_size * volume.shape[1]
-    print(f"diameter: {volume_d}")
-    print(f"slices: {volume.shape[0]}")
-    print(f"slice_thickness: {slice_thickness}")
-    print(f"height: {volume.shape[0] * slice_thickness}")
-    print(f"rescale_intercept: {rescale_intercept}")
 
     volume[volume > bone_hu] = bone_hu
     air_mask = make_air_mask(volume, air_hu)
@@ -172,25 +165,19 @@ def main() -> None:
     tifffile.imwrite(phantom_path / "volume_to_water.tif", volume, imagej=True, compression="zlib")
 
     volume, voxel_size = resampled_volume(volume, voxel_size, slice_thickness, new_size=upscaled_size)
-    print(f"voxel_size_upscaled: {voxel_size}")
+    if volume.shape[0] % 2 == 1:
+        volume = volume[:-1,]
     # volume_upscaled += np.random.uniform(-1, 1, volume_upscaled.shape)
-    # tifffile.imwrite(phantom_path / "volume_upscaled.tif", volume, imagej=True, compression="zlib")
+    tifffile.imwrite(phantom_path / "volume_upscaled.tif", volume, imagej=True, compression="zlib")
 
     scale = d / volume_d
-    print(f"scale: {scale:.2f}")
 
-    print("upscaled")
-    volume_cut = cut_from_middle(volume, h, voxel_size, scale)
-    make_phantom(phantom_path / "upscaled", volume_cut, voxel_size, scale)
-    tifffile.imwrite(phantom_path / "volume_upscaled_cut.tif", volume_cut, imagej=True, compression="zlib")
+    make_phantom(phantom_path / "upscaled", volume, voxel_size, scale)
 
     volume, voxel_size = resampled_volume(volume, voxel_size, voxel_size, new_size=downscaled_size)
     tifffile.imwrite(phantom_path / "volume_downscaled.tif", volume, imagej=True, compression="zlib")
 
-    print("downscaled")
-    volume_cut = cut_from_middle(volume, h, voxel_size, scale)
-    make_phantom(phantom_path / "downscaled", volume_cut, voxel_size, scale)
-    tifffile.imwrite(phantom_path / "volume_downscaled_cut.tif", volume_cut, imagej=True, compression="zlib")
+    make_phantom(phantom_path / "downscaled", volume, voxel_size, scale)
 
 
 if __name__ == "__main__":
