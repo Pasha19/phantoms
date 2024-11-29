@@ -56,3 +56,25 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def get_xcist(phantom_json_path: pathlib.Path, cfg: list[str], projs_path: pathlib.Path, projs_name: str) -> xc.CatSim:
+    projs_path.mkdir(parents=True, exist_ok=True)
+    xcist = xc.CatSim(*cfg)
+    xcist.cfg.phantom.filename = str(phantom_json_path)
+    xcist.resultsName = str(projs_path / projs_name)
+    return xcist
+
+
+def make_projs(phantom_path: pathlib.Path, cfg_path: pathlib.Path) -> None:
+    phantom_json_path = phantom_path / "phantom.json"
+    projs_name = "projs"
+    xcist = get_xcist(phantom_json_path, get_config(cfg_path), phantom_path, projs_name)
+    xcist.run_all()
+    num = xcist.cfg.protocol.viewCount
+    rows = xcist.cfg.scanner.detectorRowCount
+    cols = xcist.cfg.scanner.detectorColCount
+    projs = xc.rawread(str(phantom_path / f"{projs_name}.prep"), (num, rows, cols), "float")
+    tifffile.imwrite(phantom_path / f"{projs_name}.tif", projs, imagej=True, compression="zlib")
+    with open(phantom_path / f"{projs_name}.json", "w", newline="\n") as f:
+        json.dump(make_proj_config(xcist), f, indent=4)
