@@ -82,9 +82,9 @@ def make_tmp_phantom(
     materials: list[str],
     voxel_size: float,
     thin_scale: float,
+    tmp_id: str,
 ) -> pathlib.Path:
     phantom_file_names = []
-    tmp_id = f"{os.getpid()}"
     for i in range(0, len(materials)):
         phantom_name = f"{tmp_id}.{materials[i]}"
         phantom_file_name = phantom_name + ".raw"
@@ -146,23 +146,18 @@ class SliceProjWorkerArgs:
 
 
 def slice_proj_worker(args: SliceProjWorkerArgs) -> tuple[np.ndarray, int]:
+    tmp_id = f"{os.getpid()}"
     slice_phantom_cfg_path = make_tmp_phantom(
         args.xcist_tmp_path.parent,
         args.volumes,
         args.phantom_cfg["mat_name"],
         args.voxel_size,
         args.thin_scale,
+        tmp_id,
     )
     xcist = xc.CatSim(args.xcist_tmp_path)
-    sid = xcist.cfg.scanner.sid
-    sdd = xcist.cfg.scanner.sdd
-    xcist.cfg.phantom.centerOffset = [
-        0.0,
-        sid - sdd - args.thin_scale * args.voxel_size / 2,
-        0.0,
-    ]
     xcist.cfg.phantom.filename = str(slice_phantom_cfg_path)
-    xcist.resultsName = str(args.xcist_tmp_path.parent / f"slice_proj.{os.getpid()}")
+    xcist.resultsName = str(args.xcist_tmp_path.parent / f"slice_proj.{tmp_id}")
     xcist.run_all()
     path_prep = xcist.resultsName + ".prep"
     projs = xc.rawread(
@@ -174,10 +169,6 @@ def slice_proj_worker(args: SliceProjWorkerArgs) -> tuple[np.ndarray, int]:
         ),
         "float",
     )
-    # slice_scale = gen_geometry_in_slice_corection_matrix(
-    #     projs.shape, args.voxel_size, xcist.cfg.scanner.sdd, args.thin_scale
-    # )
-    # projs *= slice_scale / args.voxel_size
     return projs, args.slice_ind
 
 
@@ -188,7 +179,7 @@ def set_stdout_to_devnull() -> None:
     sys.stderr = devnull
 
 
-def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05) -> np.ndarray:
+def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_dir: bool = True) -> np.ndarray:
     phantom_cfg_json = pathlib.Path(ex.cfg.phantom.filename)
     with open(phantom_cfg_json, "r") as f:
         phantom_cfg = json.load(f)
@@ -205,8 +196,6 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05) -> np.ndarray
             phantom_cfg["slices"][i],
         )
         volume = xc.rawread(volume_file, (slices, rows, cols), "float")
-        # im = Image.fromarray(255 * volume[ volume.shape[1] // 2, :, :]).convert("L")
-        # im.save(phantom_cfg_json.parent / f"{phantom_cfg["volumefractionmap_filename"][i]}.{phantom_cfg["mat_name"][i]}.png")
         x_size, y_size, z_size = (
             phantom_cfg["x_size"][i],
             phantom_cfg["y_size"][i],
@@ -228,6 +217,11 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05) -> np.ndarray
     )
     ex.cfg.protocol.viewCount = 1
     ex.cfg.protocol.stopViewId = 0
+    ex.cfg.phantom.centerOffset = [
+        0.0,
+        sid - sdd - thin_scale * voxel_size / 2,
+        0.0,
+    ]
     xcist_tmp_path = tmp_path / "xcist.cfg"
     with open(xcist_tmp_path, "w") as f:
         f.write(cfg_to_str(ex))
@@ -252,7 +246,8 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05) -> np.ndarray
     slice_scale = gen_geometry_in_slice_corection_matrix(projs.shape, det_pix_size, ex.cfg.scanner.sdd, thin_scale)
     slice_scale = np.transpose(slice_scale, (1, 0, 2))
     vol_gt *= slice_scale / det_pix_size
-    shutil.rmtree(tmp_path)
+    if delete_tmp_dir:
+        shutil.rmtree(tmp_path)
     return vol_gt
 
 
@@ -266,10 +261,10 @@ def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg_flat"
     xcist = xcist_from_config_path(cfg_path)
-    phantom_path = root_path / "phantoms/_test" / "phantom.json"
+    phantom_path = root_path / "phantoms/_phantom" / "phantom2001.json"
     xcist.cfg.phantom.filename = str(phantom_path)
     vol_gt = create_gt_sliced_thin(xcist)
-    tifffile.imwrite(phantom_path.parent / "phantom.gt.tif", vol_gt, compression="zlib")
+    tifffile.imwrite(phantom_path.parent / "phantom2001.gt.tif", vol_gt, compression="zlib")
 
 
 if __name__ == "__main__":
