@@ -196,8 +196,11 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
     phantom_cfg_json = pathlib.Path(ex.cfg.phantom.filename)
     with open(phantom_cfg_json, "r") as f:
         phantom_cfg = json.load(f)
+    with open(phantom_cfg_json.parent / "xcist.cfg", "w") as f:
+        f.write(cfg_to_str(ex))
     volumes = []
     det_pix_size = ex.cfg.scanner.detectorRowSize
+    det_col_count = ex.cfg.scanner.detectorColCount
     sid = ex.cfg.scanner.sid
     sdd = ex.cfg.scanner.sdd
     voxel_size = det_pix_size / (sdd / sid)
@@ -216,8 +219,12 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
         )
         if y_size != voxel_size:
             volume = resample_volume(volume, (x_size, y_size, z_size), voxel_size)
-        volumes.append(volume)
         new_size_in_vox = volume.shape[1]
+        if new_size_in_vox < det_col_count:
+            pad1 = (det_col_count - new_size_in_vox) // 2
+            pad2 = det_col_count - new_size_in_vox - pad1
+            volume = np.pad(volume, ((0, 0), (pad1, pad2), (0, 0)), mode="constant", constant_values=0.0)
+        volumes.append(volume)
     tmp_path = phantom_cfg_json.parent / f"tmp.{os.getpid()}"
     tmp_path.mkdir(exist_ok=True, parents=True)
     vol_gt = np.zeros(
@@ -241,9 +248,12 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
     process_count = psutil.cpu_count(logical=False)
     wait = Value("i", 0)
     with Pool(processes=process_count, initializer=init_worker, initargs=(wait,)) as pool:
-        start_ind = max(0, (new_size_in_vox - ex.cfg.scanner.detectorColCount) // 2)
-        end_ind = min(ex.cfg.scanner.detectorColCount, start_ind + new_size_in_vox)
-        offset_ind = max(0, (ex.cfg.scanner.detectorColCount - new_size_in_vox) // 2)
+        # start_ind = max(0, (new_size_in_vox - ex.cfg.scanner.detectorColCount) // 2)
+        start_ind = 0
+        # end_ind = min(ex.cfg.scanner.detectorColCount, start_ind + new_size_in_vox)
+        end_ind = det_col_count
+        # offset_ind = max(0, (ex.cfg.scanner.detectorColCount - new_size_in_vox) // 2)
+        offset_ind = 0
         args = [
             SliceProjWorkerArgs(
                 xcist_tmp_path=xcist_tmp_path,
