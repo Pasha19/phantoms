@@ -4,8 +4,9 @@ import os
 import pathlib
 import shutil
 import sys
+import time
 from dataclasses import dataclass
-from multiprocessing import Pool
+from multiprocessing import Pool, Value
 
 import gecatsim as xc
 import gecatsim.pyfiles.CommonTools
@@ -172,11 +173,23 @@ def slice_proj_worker(args: SliceProjWorkerArgs) -> tuple[np.ndarray, int]:
     return projs, args.slice_ind
 
 
-def set_stdout_to_devnull() -> None:
+def init_worker(wait: Value) -> None:
+    with wait.get_lock():
+        wait_value = wait.value
+        wait.value += 1
+    print(f"pid {os.getpid()} sleep {wait_value}")
+    time.sleep(wait_value)
     devnull = open(os.devnull, "w")
     os.dup2(devnull.fileno(), sys.stdout.fileno())
     sys.stdout = devnull
     sys.stderr = devnull
+
+
+def read_phantom_volume_tif_or_raw(volume_raw_path: pathlib.Path, dims: tuple[int, int, int]) -> np.ndarray:
+    volume_tif_path = volume_raw_path.with_suffix(".tif")
+    if volume_tif_path.is_file():
+        return tifffile.imread(volume_tif_path)
+    return xc.rawread(str(volume_raw_path), (dims[0], dims[1], dims[2]), "float")
 
 
 def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_dir: bool = True) -> np.ndarray:
@@ -189,13 +202,13 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
     sdd = ex.cfg.scanner.sdd
     voxel_size = det_pix_size / (sdd / sid)
     for i in range(phantom_cfg["n_materials"]):
-        volume_file = str(phantom_cfg_json.parent / phantom_cfg["volumefractionmap_filename"][i])
+        volume_raw_path = phantom_cfg_json.parent / phantom_cfg["volumefractionmap_filename"][i]
         rows, cols, slices = (
             phantom_cfg["rows"][i],
             phantom_cfg["cols"][i],
             phantom_cfg["slices"][i],
         )
-        volume = xc.rawread(volume_file, (slices, rows, cols), "float")
+        volume = read_phantom_volume_tif_or_raw(volume_raw_path, (slices, rows, cols))
         x_size, y_size, z_size = (
             phantom_cfg["x_size"][i],
             phantom_cfg["y_size"][i],
@@ -226,7 +239,8 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
     with open(xcist_tmp_path, "w") as f:
         f.write(cfg_to_str(ex))
     process_count = psutil.cpu_count(logical=False)
-    with Pool(processes=process_count, initializer=set_stdout_to_devnull) as pool:
+    wait = Value("i", 0)
+    with Pool(processes=process_count, initializer=init_worker, initargs=(wait,)) as pool:
         start_ind = max(0, (new_size_in_vox - ex.cfg.scanner.detectorColCount) // 2)
         end_ind = min(ex.cfg.scanner.detectorColCount, start_ind + new_size_in_vox)
         offset_ind = max(0, (ex.cfg.scanner.detectorColCount - new_size_in_vox) // 2)
@@ -261,10 +275,10 @@ def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg_flat"
     xcist = xcist_from_config_path(cfg_path)
-    phantom_path = root_path / "phantoms/_phantom" / "phantom2001.json"
+    phantom_path = root_path / "phantoms/_test" / "phantom.json"
     xcist.cfg.phantom.filename = str(phantom_path)
     vol_gt = create_gt_sliced_thin(xcist)
-    tifffile.imwrite(phantom_path.parent / "phantom2001.gt.tif", vol_gt, compression="zlib")
+    tifffile.imwrite(phantom_path.parent / "phantom.gt.tif", vol_gt, compression="zlib")
 
 
 if __name__ == "__main__":
