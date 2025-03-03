@@ -281,14 +281,41 @@ def xcist_from_config_path(cfg_path: pathlib.Path) -> xc.CatSim:
     return xc.CatSim(str(cfg_path))
 
 
+def make_mu_from_xcist_volume(xcist: xc.CatSim, voxel_size: float) -> np.ndarray:
+    phantom_cfg_json = pathlib.Path(xcist.cfg.phantom.filename)
+    with open(phantom_cfg_json, "r") as f:
+        phantom_cfg = json.load(f)
+    result = None
+    for i in range(phantom_cfg["n_materials"]):
+        volume_raw_path = phantom_cfg_json.parent / phantom_cfg["volumefractionmap_filename"][i]
+        rows, cols, slices = (
+            phantom_cfg["rows"][i],
+            phantom_cfg["cols"][i],
+            phantom_cfg["slices"][i],
+        )
+        x_size, y_size, z_size = (
+            phantom_cfg["x_size"][i],
+            phantom_cfg["y_size"][i],
+            phantom_cfg["z_size"][i],
+        )
+        volume = read_phantom_volume_tif_or_raw(volume_raw_path, (slices, rows, cols))
+        volume = resample_volume(volume, (x_size, y_size, z_size), voxel_size)
+        mu = xc.GetMu(phantom_cfg["mat_name"][i], np.array(xcist.cfg.physics.monochromatic, dtype=np.float32))
+        if result is None:
+            result = volume * mu
+        else:
+            result += volume * mu
+    return result
+
+
 def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg_flat"
     xcist = xcist_from_config_path(cfg_path)
     phantom_path = root_path / "phantoms/_test" / "phantom.json"
     xcist.cfg.phantom.filename = str(phantom_path)
-    vol_gt = create_gt_sliced_thin(xcist)
-    tifffile.imwrite(phantom_path.parent / "phantom.gt.tif", vol_gt, compression="zlib")
+    vol = make_mu_from_xcist_volume(xcist, 2.15)
+    tifffile.imwrite(phantom_path.parent / "vol.tif", vol, imagej=True, compression="zlib")
 
 
 if __name__ == "__main__":
