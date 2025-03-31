@@ -5,14 +5,14 @@ set -ex
 ENV_NAME=venv
 
 conda create -y -n "$ENV_NAME" \
+    python=3.12 \
     tomosipo \
     astra-toolbox \
-    numpy \
+    "numpy<2.0" \
     scikit-image \
     pytorch \
     -c default \
     -c astra-toolbox \
-    -c nvidia \
     -c aahendriksen \
     -c pytorch
 
@@ -21,6 +21,7 @@ conda install -y -n "$ENV_NAME" \
     matplotlib \
     pydicom \
     vedo \
+    xdesign \
     -c default \
     -c conda-forge
 

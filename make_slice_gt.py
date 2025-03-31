@@ -11,7 +11,7 @@ from multiprocessing import Pool, Value
 import gecatsim as xc
 import gecatsim.pyfiles.CommonTools
 import numpy as np
-import psutil
+# import psutil
 import tifffile
 from gecatsim.pyfiles.GetMu import GetMu
 from scipy import ndimage
@@ -45,7 +45,7 @@ def cfg_to_str(ex: xc.CatSim) -> str:
 
 
 def create_config(
-    dims: np.ndarray,
+    dims,
     voxel_size: tuple[float, float, float],
     volume_raw_names: list[str],
     materials: list[str],
@@ -87,7 +87,7 @@ def make_tmp_phantom(
 ) -> pathlib.Path:
     phantom_file_names = []
     for i in range(0, len(materials)):
-        phantom_name = f"{tmp_id}.{materials[i]}"
+        phantom_name = f"{tmp_id}.{i+1}.{materials[i]}"
         phantom_file_name = phantom_name + ".raw"
         phantom_file_names.append(phantom_file_name)
         phantom_file_path = phantom_root_path / phantom_file_name
@@ -245,7 +245,8 @@ def create_gt_sliced_thin(ex: xc.CatSim, thin_scale: float = 0.05, delete_tmp_di
     xcist_tmp_path = tmp_path / "xcist.cfg"
     with open(xcist_tmp_path, "w") as f:
         f.write(cfg_to_str(ex))
-    process_count = psutil.cpu_count(logical=False)
+    # process_count = psutil.cpu_count(logical=False)
+    process_count = 12
     wait = Value("i", 0)
     with Pool(processes=process_count, initializer=init_worker, initargs=(wait,)) as pool:
         # start_ind = max(0, (new_size_in_vox - ex.cfg.scanner.detectorColCount) // 2)
@@ -312,9 +313,10 @@ def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
     cfg_path = root_path / "cfg_flat"
     xcist = xcist_from_config_path(cfg_path)
-    phantom_path = root_path / "phantoms/_test" / "phantom.json"
+    phantom_path = root_path / "phantoms/_1" / "phantom.json"
     xcist.cfg.phantom.filename = str(phantom_path)
-    vol = make_mu_from_xcist_volume(xcist, 2.15)
+    # vol = make_mu_from_xcist_volume(xcist, 2.15)
+    vol = create_gt_sliced_thin(xcist)
     tifffile.imwrite(phantom_path.parent / "vol.tif", vol, imagej=True, compression="zlib")
 
 
