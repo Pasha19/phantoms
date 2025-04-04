@@ -8,6 +8,7 @@ import numpy as np
 import tomosipo as ts
 import torch
 from gecatsim.pyfiles.GetMu import GetMu
+from gecatsim.pyfiles.Prep_BHC_Accurate import Prep_BHC_Accurate
 from tifffile import tifffile
 from ts_algorithms import fdk
 
@@ -137,6 +138,10 @@ def make_reconstruct(projs_path: pathlib.Path, xcist: xc.CatSim, voxel_size: flo
     projs = tifffile.imread(projs_path)
     assert num == projs.shape[0]
 
+    if xcist.cfg.protocol.rotationDirection == 1:
+        projs = np.flip(projs, axis=0)
+        projs = np.ascontiguousarray(projs)
+
     det_pixel_size = xcist.cfg.scanner.detectorColSize
 
     detector_shape = [projs.shape[1], projs.shape[2]]
@@ -190,9 +195,36 @@ def test(
     print(list(map(lambda hu: (hu - lcr_hu) / (lcr_hu + hu), lc_hu)))
 
 
+def bhc(xcist: xc.CatSim) -> None:
+    bhc_reference_energy = 80
+    bhc_reference_material = "water_20C"
+
+    mu = xc.GetMu(bhc_reference_material, np.array(bhc_reference_energy, dtype=np.float32))
+
+    cfg = xcist.get_current_cfg()
+    cfg.physics.EffectiveMu = mu
+    cfg.physics.BHC_poly_order = 5
+    cfg.physics.BHC_max_length_mm = 500
+    cfg.physics.BHC_length_step_mm = 10
+
+    projs = xc.rawread(
+        xcist.resultsName + ".prep",
+        (cfg.protocol.viewCount, cfg.scanner.detectorRowCount, cfg.scanner.detectorColCount),
+        "float",
+    )
+
+    tifffile.imwrite(xcist.resultsName + ".prebh.tif", projs, compression="zlib")
+    xc.rawwrite(xcist.resultsName + ".prebh", projs)
+    projs = Prep_BHC_Accurate(cfg, projs.reshape(xcist.cfg.protocol.viewCount, -1))
+
+    projs = projs.reshape(cfg.protocol.viewCount, cfg.scanner.detectorRowCount, cfg.scanner.detectorColCount)
+    tifffile.imwrite(xcist.resultsName + ".tif", projs, compression="zlib")
+    xc.rawwrite(xcist.resultsName + ".prep", projs)
+
+
 def main() -> None:
     root_path = pathlib.Path(__file__).parent.resolve()
-    phantom_path = root_path / "phantoms/_2"
+    phantom_path = root_path / "phantoms/_3"
     d = 501.7847226
     d_vox = 453
     h = 159.5077264
@@ -208,8 +240,8 @@ def main() -> None:
                 cylinder=Cylinder(
                     diameter=0.1 * d,
                     height=h,
-                    mat_name="water",
-                    mat_value=1.01,
+                    mat_name="Al",
+                    mat_value=1.0,
                 ),
                 distance=0.3 * d,
                 angle=45 * math.pi / 180,
@@ -218,8 +250,8 @@ def main() -> None:
                 cylinder=Cylinder(
                     diameter=0.1 * d,
                     height=h,
-                    mat_name="water",
-                    mat_value=1.02,
+                    mat_name="Al",
+                    mat_value=1.0,
                 ),
                 distance=0.3 * d,
                 angle=(45 + 90) * math.pi / 180,
@@ -228,8 +260,8 @@ def main() -> None:
                 cylinder=Cylinder(
                     diameter=0.1 * d,
                     height=h,
-                    mat_name="water",
-                    mat_value=1.05,
+                    mat_name="Al",
+                    mat_value=1.0,
                 ),
                 distance=0.3 * d,
                 angle=(45 + 180) * math.pi / 180,
@@ -238,8 +270,8 @@ def main() -> None:
                 cylinder=Cylinder(
                     diameter=0.1 * d,
                     height=h,
-                    mat_name="water",
-                    mat_value=1.10,
+                    mat_name="Al",
+                    mat_value=1.0,
                 ),
                 distance=0.3 * d,
                 angle=(45 + 270) * math.pi / 180,
@@ -256,17 +288,20 @@ def main() -> None:
         for i in range(3, -1, -1)
     ]
 
-    # cfg_path = root_path / "cfg_flat"
+    cfg_path = root_path / "cfg_flat"
     # xcist = make_projections(cfg_path, phantom_path)
     # cfg_str = cfg_to_str(xcist)
     # with open(phantom_path / "xcist.cfg", "w", newline="\n") as f:
     #     f.write(cfg_str)
 
     xcist = xc.CatSim(str(phantom_path / "xcist.cfg"))
-    # recon = make_reconstruct(phantom_path / "projs.tif", xcist, d / d_vox)
-    # tifffile.imwrite(phantom_path / "recon.tif", recon, imagej=True, compression="zlib")
-    recon = tifffile.imread(phantom_path / "recon.tif")
-    test(recon, d / d_vox, xcist, lcr, lc)
+    xcist.resultsName = str(phantom_path / "projs")
+    bhc(xcist)
+
+    recon = make_reconstruct(phantom_path / "projs.tif", xcist, d / d_vox)
+    tifffile.imwrite(phantom_path / "recon2.tif", recon, imagej=True, compression="zlib")
+    # recon = tifffile.imread(phantom_path / "recon.tif")
+    # test(recon, d / d_vox, xcist, lcr, lc)
 
 
 if __name__ == "__main__":
